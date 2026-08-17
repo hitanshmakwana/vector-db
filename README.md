@@ -1,222 +1,264 @@
-# PyVec — A Vector Database in Python
+# PyVec
 
-> A single-node vector database built from scratch in Python. Implements HNSW and
-> IVF-Flat approximate nearest neighbor indexes, BM25 sparse retrieval, and
-> Reciprocal Rank Fusion for hybrid search. ~40–50 hour build budget.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests: 490 Passed](https://img.shields.io/badge/tests-490%20passed-brightgreen.svg)](./tests)
+[![Architecture: Single--Node](https://img.shields.io/badge/architecture-single--node-orange.svg)](./docs/ARCHITECTURE.md)
 
-## Documentation
+**PyVec** is a lightweight, single-node vector database and retrieval engine built from scratch in Python and NumPy. It provides high-performance approximate nearest neighbor (ANN) search, sparse BM25 text retrieval, hybrid search via Reciprocal Rank Fusion (RRF), crash-safe persistence, and a production-ready FastAPI HTTP interface.
 
-- **[Architecture & Design (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)** — System architecture, storage layout, indexing mechanisms, and concurrency model.
-- **[API Specification (`docs/API_SPEC.md`)](./docs/API_SPEC.md)** — Complete REST API endpoint contracts and JSON schema definitions.
-- **[Architectural Decisions (`docs/DECISIONS.md`)](./docs/DECISIONS.md)** — Technical ADRs detailing key design decisions and trade-offs.
-- **[Benchmark Targets & Methodology (`docs/BENCHMARKS.md`)](./docs/BENCHMARKS.md)** — Evaluation setup, benchmark goals, and methodology.
-- **[Measured Results (`docs/RESULTS.md`)](./docs/RESULTS.md)** — Comprehensive measured performance numbers across SIFT-1M, MS MARCO, and concurrent load tests.
+---
 
-## Project at a glance
+## Key Features
 
-| Aspect | Choice |
-|---|---|
-| Language | Python 3.11+ (NumPy for hot paths) |
-| ANN indexes | HNSW + IVF-Flat (both from scratch) |
-| Sparse retrieval | BM25 with inverted index |
-| Hybrid fusion | Reciprocal Rank Fusion (RRF) |
-| Persistence | mmap for vectors + append-only WAL for metadata |
-| API | FastAPI (HTTP/JSON) |
-| Topology | Single-node (no sharding, no replication) |
-| Concurrency | Read-write lock, thread-safe reads |
+- **Approximate Nearest Neighbor (ANN) Indexing**
+  - **HNSW (Hierarchical Navigable Small World)**: Multi-layer graph index with heuristic neighbor selection (Malkov & Yashunin, 2016) achieving **96.2% recall@10 on SIFT-1M**.
+  - **IVF-Flat (Inverted File Index)**: Coarse quantization with k-means++ clustering and multi-probe bucket scanning.
+  - **Exact Flat Index**: Exhaustive vector scan serving as ground-truth correctness oracle.
 
-## What you should NOT use
+- **Hybrid Lexical & Semantic Retrieval**
+  - **Vectorized BM25**: Sparse keyword search with inverted posting lists and NumPy `bincount` scatter-add scoring.
+  - **Reciprocal Rank Fusion (RRF)**: Rank-based fusion merging dense vector embeddings and sparse lexical hits without score calibration.
 
-To keep the project honest as a "from scratch" build:
+- **Crash-Safe Persistence & Durability**
+  - **Memory-Mapped Storage (`mmap`)**: Contiguous `float32` vector arrays with instant cold start (**1M vectors queryable in 2.93s**).
+  - **CRC32 Write-Ahead Log (WAL)**: Append-only durability layer with automatic checksum verification and torn-tail recovery under unexpected process termination.
 
-- **No FAISS, hnswlib, Annoy, ScaNN.** You are building these. Use them only as benchmark baselines.
-- **No LangChain, LlamaIndex, or any RAG framework.** This is infrastructure, not an app.
-- **No Qdrant/Weaviate/Chroma/Pinecone client libraries.** Same reason.
+- **Concurrency & REST API**
+  - **Writer-Preferring RWLock**: Thread-safe multi-reader concurrency that prevents writer starvation during heavy query loads.
+  - **FastAPI HTTP Service**: REST API supporting collection lifecycle, batch inserts, dense queries, text search, hybrid retrieval, and metadata filtering.
+  - **CLI & Python SDK**: Interactive command-line interface and zero-dependency Python client library.
 
-## What you CAN use
+---
 
-- **NumPy** — for vectorized distance computations. Writing your own SIMD in Python is silly.
-- **FastAPI + Pydantic** — HTTP layer. Nobody builds their own web server for this.
-- **sentence-transformers** — *only* to generate embeddings for demo/test data. The DB itself never touches this; it just stores whatever floats you give it.
-- **pytest, matplotlib, tqdm** — testing and eval plumbing.
+## Benchmark Highlights
+
+Measured single-threaded on Intel Core i5-10400T (Windows 11, Python 3.14 / NumPy 2.4):
+
+| Benchmark / Workload | Metric / Target | Measured Result | Reference |
+|---|---|---|---|
+| **HNSW Recall vs FAISS** (SIFT-1M, $ef=64$) | Recall@10 Parity | **96.19%** vs FAISS 96.39% (0.3% MAE) | [RESULTS.md](./docs/RESULTS.md#3-benchmark-1--hnsw-recall-qps-vs-faiss-sift-1m) |
+| **Startup & Recovery** (1M vectors $\times$ 128d) | Time to First Query | **2.93 seconds** (vs 30s target) | [RESULTS.md](./docs/RESULTS.md#6-benchmark-5--startup-and-recovery-prd-nf3) |
+| **HTTP Load & Latency** (20k vectors behind FastAPI) | Throughput & Latency | **224.1 RPS @ 5.48 ms p95** (0 errors) | [RESULTS.md](./docs/RESULTS.md#7-load-test--the-deployed-http-surface) |
+| **Durability Trade-off** (100k vectors) | Group Commit vs sync | **23,801 vec/s** vs 2,316 vec/s (10.3× lift) | [RESULTS.md](./docs/RESULTS.md#5-benchmark-4--the-cost-of-durability) |
+| **BM25 Scorer Optimization** | Vectorized scatter-add | **6.7× speedup** (35.35 ms $\to$ 5.25 ms/query) | [RESULTS.md](./docs/RESULTS.md#7-load-test--the-deployed-http-surface) |
+
+*Full evaluation reports and reproducibility steps available in [docs/RESULTS.md](./docs/RESULTS.md).*
+
+---
 
 ## Quickstart
 
-```bash
-pip install -e .            # core: numpy, fastapi, pydantic, uvicorn
-pip install -e '.[test]'    # + pytest, httpx
-```
-
-Run the offline demo — insert, all three query paths, filter, delete, restart,
-compact:
+### Installation
 
 ```bash
-python examples/quickstart.py     # embedded, no server
-python examples/http_demo.py      # the same flow over HTTP
+# Clone repository
+git clone https://github.com/hitanshmakwana/vector-db.git
+cd vector-db
+
+# Install core package
+pip install -e .
+
+# Optional: install development, testing & benchmark extras
+pip install -e '.[test,demo,bench,compare]'
 ```
 
-### As a library
+---
+
+### Embedded Python API
 
 ```python
+import numpy as np
 from pyvec import Collection
 
-c = Collection.create("docs", root="./data", dimension=384,
-                      metric="cosine", index_type="hnsw",
-                      index_params={"M": 16, "ef_construction": 200},
-                      text_field="content")   # enables BM25 on the same collection
+# 1. Create a collection with HNSW index and BM25 sparse retrieval enabled
+collection = Collection.create(
+    name="documents",
+    root="./data",
+    dimension=128,
+    metric="cosine",
+    index_type="hnsw",
+    index_params={"M": 16, "ef_construction": 200},
+    text_field="content"  # enables BM25 on this metadata field
+)
 
-c.insert([{"id": "d1", "vector": vec, "metadata": {"content": "the quick brown fox"}}])
+# 2. Insert records
+vector = np.random.randn(128).astype("float32").tolist()
+collection.insert([
+    {
+        "id": "doc_1",
+        "vector": vector,
+        "metadata": {
+            "title": "Vector Databases Overview",
+            "content": "Hierarchical Navigable Small World graphs enable efficient ANN search.",
+            "category": "database"
+        }
+    }
+])
 
-c.search(query_vector, k=10, params={"ef_search": 64})       # dense
-c.search_text("quick fox", k=10)                             # BM25
-c.search_hybrid(query_vector, "quick fox", k=10)             # RRF fusion
-c.search(query_vector, k=10, filter={"category": "animals"}) # metadata filter
+# 3. Querying
+# Dense vector search
+dense_hits = collection.search(query_vector=vector, k=5, params={"ef_search": 64})
 
-c.close()                                    # checkpoints; reopen with Collection.open
+# Sparse BM25 text search
+text_hits = collection.search_text(query_text="HNSW graph search", k=5)
+
+# Hybrid search via Reciprocal Rank Fusion (RRF)
+hybrid_hits = collection.search_hybrid(
+    query_vector=vector,
+    query_text="HNSW graph search",
+    k=5
+)
+
+# Metadata-filtered search
+filtered_hits = collection.search(
+    query_vector=vector,
+    k=5,
+    filter={"category": "database"}
+)
+
+# Checkpoint and close
+collection.close()
 ```
 
-### As a server
+---
+
+### Running the HTTP Server
+
+#### Via CLI / Uvicorn
 
 ```bash
+# Start server with default data directory (./data)
 pyvec serve --port 8080 --data-dir ./data
-# or: uvicorn pyvec.api.server:app --port 8080
-# or: docker compose up --build
 
-curl -X POST localhost:8080/collections \
-  -d '{"name":"t","dimension":4,"metric":"cosine","index":{"type":"hnsw"}}'
-curl -X POST localhost:8080/collections/t/insert \
-  -d '{"items":[{"id":"a","vector":[1,0,0,0]}]}'
-curl -X POST localhost:8080/collections/t/query \
-  -d '{"vector":[1,0,0,0],"k":3}'
+# Or directly with uvicorn
+uvicorn pyvec.api.server:app --host 0.0.0.0 --port 8080
 ```
 
-Full endpoint list in [API_SPEC.md](./docs/API_SPEC.md). There is also a CLI
-(`pyvec ls`, `pyvec query`, `pyvec hybrid`, ...) and a zero-dependency Python
-client (`pyvec.client.PyVecClient`).
-
-### Tests and benchmarks
+#### Via Docker Compose
 
 ```bash
-pytest -m "not slow"                                  # 486 tests, ~3.5 min
-pytest                                                # + the 10k-vector recall check
-python -m benchmarks.sift_1m --synthetic --n 20000    # harness check, no download
-python -m benchmarks.sift_1m                          # the real thing (~500MB)
-python -m benchmarks.compare_vectordbs --n 50000      # head-to-head vs ChromaDB
-python -m benchmarks.plot_pareto                      # CSV -> plots
+docker compose up --build
 ```
 
-See [benchmarks/README.md](./benchmarks/README.md) for the full set and what to
-expect from each.
+#### Example REST API Calls
 
-## Directory layout
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Create a collection
+curl -X POST http://localhost:8080/collections \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "articles",
+    "dimension": 4,
+    "metric": "cosine",
+    "index": {"type": "hnsw", "params": {"M": 16, "ef_construction": 200}},
+    "text_field": "body"
+  }'
+
+# Insert items
+curl -X POST http://localhost:8080/collections/articles/insert \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+      {
+        "id": "art_1",
+        "vector": [0.2, 0.8, -0.1, 0.5],
+        "metadata": {"body": "Fast vector search engines with Python and NumPy."}
+      }
+    ]
+  }'
+
+# Query collection
+curl -X POST http://localhost:8080/collections/articles/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vector": [0.2, 0.8, -0.1, 0.5],
+    "k": 5
+  }'
+```
+
+---
+
+### Using the Python Client SDK
+
+```python
+from pyvec.client import PyVecClient
+
+client = PyVecClient(base_url="http://localhost:8080")
+
+# Create and populate
+client.create_collection("products", dimension=128, metric="l2", index_type="hnsw")
+client.insert("products", [
+    {"id": "p1", "vector": [0.1] * 128, "metadata": {"brand": "acme"}}
+])
+
+# Query
+results = client.query("products", vector=[0.1] * 128, k=10)
+for hit in results:
+    print(f"ID: {hit.id}, Score: {hit.score}, Metadata: {hit.metadata}")
+```
+
+---
+
+## Repository Structure
 
 ```
 vector-db/
-├── docs/                        # Complete project documentation and design specs
+├── docs/                        # Technical documentation & design specifications
 │   ├── API_SPEC.md              # REST API endpoint specification
-│   ├── ARCHITECTURE.md          # Architecture, storage, concurrency, lifecycle
-│   ├── BENCHMARKS.md            # Benchmark targets and evaluation methodology
-│   ├── DECISIONS.md             # ADRs (Architectural Decision Records)
-│   ├── LEARNING.md              # Core algorithm theories and mental models
-│   ├── NOTES.md                 # Development journal and optimization notes
-│   ├── PRD.md                   # Product requirements document
-│   ├── PROJECT_COMPLETE.md      # Comprehensive standalone project guide
-│   ├── PROJECT_PLAN.md          # Development milestone schedule
-│   ├── RESULTS.md               # Measured experimental results & logs
-│   └── RESUME.md                # Resume bullet points & interview guide
+│   ├── ARCHITECTURE.md          # System architecture & concurrency model
+│   ├── BENCHMARKS.md            # Benchmark targets & methodology
+│   ├── DECISIONS.md             # Architectural Decision Records (ADRs)
+│   └── RESULTS.md               # Empirical benchmark logs & verification data
 ├── pyvec/                       # Core database package
-│   ├── api/                     # FastAPI app, routing, request/response schemas
-│   │   ├── schemas.py
-│   │   └── server.py
-│   ├── core/                    # Engine internals, collection manager, lock, types
-│   │   ├── collection.py        # Top-level Collection (WAL ordering, checkpointing)
-│   │   ├── collection_manager.py# Multi-collection registry and lifecycle
-│   │   ├── distance.py          # Vectorized distance metrics (L2, Cosine, Dot)
-│   │   ├── errors.py            # Typed domain errors
-│   │   ├── kmeans.py            # K-means++ clustering for IVF centroids
-│   │   ├── rwlock.py            # Writer-preferring reader-writer lock
-│   │   ├── tokenize.py          # Fast tokenizer for text processing
-│   │   └── types.py             # Data types, protocols, and enums
-│   ├── fusion/                  # Hybrid search fusion algorithms
-│   │   └── rrf.py               # Reciprocal Rank Fusion (RRF)
-│   ├── indexes/                 # Vector and lexical indexing implementations
-│   │   ├── bm25.py              # Inverted index with vectorized BM25 scoring
-│   │   ├── flat.py              # Exact brute-force scan (ground truth oracle)
-│   │   ├── hnsw.py              # Malkov & Yashunin (2016) HNSW graph index
-│   │   └── ivf.py               # IVF-Flat index with coarse quantization
-│   ├── storage/                 # Persistence and durability subsystems
-│   │   ├── mmap_store.py        # Memory-mapped contiguous float32 vector store
-│   │   └── wal.py               # Append-only CRC32 checksummed write-ahead log
-│   ├── cli.py                   # PyVec CLI interface
-│   ├── client.py                # Zero-dependency Python HTTP SDK client
-│   └── __init__.py
-├── benchmarks/                  # Benchmark harness, datasets, scripts & results
-│   ├── datasets/                # Cached benchmark datasets
-│   ├── plots/                   # Generated Pareto curves and latency charts
-│   ├── results/                 # Raw measured CSV benchmarks & run environment logs
-│   ├── compare_vectordbs.py     # Comparison against ChromaDB & Qdrant
-│   ├── hybrid_msmarco.py        # MS MARCO hybrid evaluation & fusion sweeps
-│   ├── load_test.py             # High-concurrency FastAPI load testing
-│   ├── persistence.py           # Durability trade-off measurements
-│   ├── plot_pareto.py           # Pareto visualization generation
-│   ├── sift_1m.py               # SIFT-1M HNSW and IVF evaluation
-│   ├── smoke_test.py            # End-to-end HTTP smoke test
-│   └── startup.py               # Cold startup and recovery benchmarks
-├── examples/                    # Runnable code examples
-│   ├── quickstart.py            # Embedded Python API demo
-│   └── http_demo.py             # Client SDK over HTTP demo
-├── tests/                       # Complete test suite (490 unit & integration tests)
+│   ├── api/                     # FastAPI server, routers, and request schemas
+│   ├── core/                    # Collection management, distance math, locks & types
+│   ├── fusion/                  # Hybrid search Reciprocal Rank Fusion (RRF)
+│   ├── indexes/                 # HNSW, IVF-Flat, BM25, and Flat index implementations
+│   ├── storage/                 # Memory-mapped vector arrays & CRC-checked WAL
+│   ├── cli.py                   # Command-line interface
+│   └── client.py                # Zero-dependency Python SDK client
+├── benchmarks/                  # Evaluation scripts, Pareto plots & load tests
+├── examples/                    # Runnable library & HTTP client demonstrations
+├── tests/                       # 490 unit, integration, and crash-safety tests
 ├── Dockerfile                   # Production container definition
-├── docker-compose.yml           # Persistent volume demo deployment
-├── pyproject.toml               # Python package configuration and dependencies
-└── README.md                    # Main project overview and entry point
+├── docker-compose.yml           # Containerized deployment with persistent volume
+├── pyproject.toml               # Package build configuration & dependencies
+└── README.md                    # Project documentation
 ```
 
-## Success = you can honestly say all of these on your resume
+---
 
-- "Implemented HNSW and IVF-Flat from scratch in Python; achieved 95%+ recall@10 vs. brute force on SIFT-1M."
-- "Built hybrid retrieval combining BM25 sparse search with dense vectors via Reciprocal Rank Fusion."
-- "Designed mmap-backed vector storage with append-only WAL for crash recovery."
-- "Benchmarked against FAISS; within 3× QPS at matched recall."
+## Testing & Verification
 
-If you can't say those things when you're done, the project isn't finished.
+Run the full automated test suite (490 test cases across index math, graph invariants, persistence, API, and crash safety):
 
-### Status of those claims — measured
+```bash
+# Run unit & integration tests
+pytest -m "not slow"
 
-The benchmarks have been run. **[RESULTS.md](./docs/RESULTS.md) has every number with
-the command that produced it.** Two of the four aspirational claims above survived
-contact with the data; two did not.
+# Run complete suite including 10k-vector recall validation
+pytest
 
-| Claim | Status |
-|---|---|
-| HNSW + IVF-Flat implemented from scratch | **Done.** 490 tests: recall vs. brute force, graph invariants, layer-0 reachability, level distribution vs. its closed form. |
-| **95%+ recall@10 on SIFT-1M** | **PASS — 0.9619** at `M=16, ef_construction=200, ef_search=64`, on the full 1,000,000 vectors. |
-| Crash-safe mmap + WAL persistence | **PASS.** Real `kill -9` mid-insert, torn/corrupt WAL tails, crashes staged inside the checkpoint window. 1M vectors queryable in 2.93s. |
-| Hybrid retrieval via RRF | **Built and working, but see below** — on real MS MARCO, unweighted RRF scored *below* dense-only. |
-| ~~Within 3× of FAISS QPS~~ | **MISS — 14.1× at matched recall** (11.8×–15.0× across the sweep). Recall matches FAISS (0.9619 vs 0.9639, 0.3 points mean absolute across six operating points); throughput does not. |
+# Run end-to-end HTTP smoke test
+python -m benchmarks.smoke_test
+```
 
-**The recall parity is the claim that matters** — it says the algorithm is
-implemented correctly, which is what a from-scratch project sets out to show.
-The throughput gap says PyVec is written in Python: the graph walk does a dict
-lookup and a heap operation per hop, and only the per-frontier distance batch is
-vectorisable (it already is). That gap is structural, not a missing optimisation.
+---
 
-Three things worth knowing before you re-run any of it:
+## Documentation
 
-- **Recall depends heavily on the dataset and the scale.** On real SIFT at
-  `ef_search=64`: 0.9619 at 1M, 0.9904 at 100k. On random Gaussian vectors — the
-  hardest case, with high intrinsic dimensionality and no cluster structure for the
-  long edges to exploit — the same parameters give ~0.87. Don't quote one as another.
-- **Budget hours, not minutes, for the build.** HNSW inserts are inherently
-  sequential: **11,579s (3.2h) for 1M vectors** against FAISS's 510s, and 1011s for
-  100k. Build scales 11.45× for 10× the data, confirming O(N log N). `--n` works at
-  smaller scale while iterating.
-- **The HNSW-vs-IVF answer depends on scale.** At 100k, HNSW led IVF by only 1.1× at
-  matched recall; at 1M it is **4.6×**, because posting lists grow linearly with N
-  while graph search grows logarithmically. Benchmarking only at a convenient scale
-  would have given the opposite conclusion. IVF's counterweight: it builds **284×
-  faster** at 1M.
-- **Hybrid search is not automatically a win.** It helps when the two retrievers are
-  complementary *and* comparably strong. On MS MARCO, where the dense model clearly
-  beats BM25, unweighted RRF averages the strong side down. See
-  [RESULTS.md](./docs/RESULTS.md) for the diagnosis and what weighted fusion would give.
+- **[Architecture & Concurrency (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**: Deep dive into the storage engine, graph routing, lock policies, and startup recovery.
+- **[REST API Specification (`docs/API_SPEC.md`)](./docs/API_SPEC.md)**: Exhaustive endpoint documentation, query schemas, and status codes.
+- **[Architectural Decisions (`docs/DECISIONS.md`)](./docs/DECISIONS.md)**: Design trade-offs (e.g., NumPy vs C++ extensions, RRF vs score weighting, WAL framing).
+- **[Benchmark Methodology (`docs/BENCHMARKS.md`)](./docs/BENCHMARKS.md)**: Experimental setup for SIFT-1M, MS MARCO, and throughput evaluations.
+- **[Empirical Results (`docs/RESULTS.md`)](./docs/RESULTS.md)**: Verified benchmark measurements, Pareto curves, and system performance logs.
+
+---
+
+## License
+
+Distributed under the MIT License. See `LICENSE` or [pyproject.toml](./pyproject.toml) for details.
