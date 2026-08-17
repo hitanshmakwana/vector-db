@@ -1,0 +1,42 @@
+# Python bytecode and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Runtime data & logs
+data/
+*.log
+
+# Benchmark artifacts & raw data
+benchmarks/datasets/
+benchmarks/results/
+!benchmarks/plots/.gitkeep
+
+# Internal development notes & personal interview/resume documents
+docs/RESUME.md
+docs/NOTES.md
+docs/PROJECT_COMPLETE.md
+docs/PROJECT_PLAN.md
+docs/PRD.md
+docs/LEARNING.md
+

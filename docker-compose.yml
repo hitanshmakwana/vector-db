@@ -1,0 +1,36 @@
+# One-command demo (PROJECT_PLAN week 5 polish item):
+#
+#     docker compose up --build
+#     curl localhost:8080/health
+#
+# Data persists in the named volume across restarts, which is what makes the
+# "restart the server and everything is still there" demo (PRD UC4) meaningful —
+# with a throwaway container filesystem it would prove nothing.
+
+services:
+  pyvec:
+    build: .
+    image: pyvec:0.1.0
+    container_name: pyvec
+    ports:
+      - "8080:8080"
+    volumes:
+      - pyvec-data:/data
+    environment:
+      PYVEC_DATA_DIR: /data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2).status == 200 else 1)
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  pyvec-data:

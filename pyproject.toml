@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyvec"
+version = "0.1.0"
+description = "A single-node vector database built from scratch in Python: HNSW, IVF-Flat, BM25, RRF hybrid search."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PyVec" }]
+keywords = ["vector-database", "hnsw", "ivf", "ann", "bm25", "rrf", "hybrid-search"]
+
+# Core dependencies only. Everything needed to run the database itself.
+# Per README: NumPy for hot paths, FastAPI+Pydantic for HTTP. Nothing else.
+dependencies = [
+    "numpy>=1.24",
+    "fastapi>=0.110",
+    "pydantic>=2.5",
+    "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+# Test plumbing.
+test = ["pytest>=7.4", "httpx>=0.26"]
+
+# Benchmark + demo extras (ADR-008: sentence-transformers is demo-only and
+# never imported from inside pyvec/).
+demo = [
+    "sentence-transformers>=2.5",
+    "h5py>=3.10",
+    "matplotlib>=3.8",
+    "pandas>=2.1",
+    "tqdm>=4.66",
+]
+
+# Baselines for benchmarking only (ADR-007: never used inside pyvec/).
+bench = ["faiss-cpu>=1.7.4"]
+
+# Peer vector databases, for the head-to-head comparison in
+# benchmarks/compare_vectordbs.py. Also never imported from inside pyvec/.
+compare = ["chromadb>=1.0", "qdrant-client>=1.9"]
+
+[project.scripts]
+pyvec = "pyvec.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pyvec*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "slow: benchmarks-scale tests, deselect with '-m \"not slow\"'",
+]
